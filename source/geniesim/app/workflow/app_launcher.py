@@ -192,20 +192,31 @@ class AppLauncher:
     def _config_resolution(self, app_config):
         self._headless = app_config.headless
         self._render_mode = app_config.render_mode
+        self._livestream = getattr(app_config, "livestream", 0)
 
     def _create_app(self):
         """Launch SimulationApp"""
-        self._app = SimulationApp(
-            {
-                "headless": self._headless,
-                "disable_viewport_updates": self._headless,
-                "renderer": self._render_mode,
-                "limit_cpu_threads": 16,
-                "extra_args": [
-                    # "--/persistent/rtx/modes/rt2/enabled=true",
-                ],
-            }
-        )
+        launch_config = {
+            "headless": self._headless,
+            "disable_viewport_updates": self._headless,
+            "renderer": self._render_mode,
+            "limit_cpu_threads": 16,
+            "extra_args": [
+                # "--/persistent/rtx/modes/rt2/enabled=true",
+            ],
+        }
+        if self._livestream >= 2:
+            launch_config["headless"] = True
+            launch_config["experience"] = os.path.join(
+                os.environ.get("ISAACSIM_HOME", "/isaac-sim"),
+                "apps",
+                "isaacsim.exp.full.streaming.kit",
+            )
+            launch_config["extra_args"].append("--no-window")
+            launch_config["extra_args"].append("--/app/livestream/port=49100")
+        elif self._livestream > 0:
+            launch_config["livestream"] = self._livestream
+        self._app = SimulationApp(launch_config)
 
     _APPLAUNCHER_CFG_INFO: dict[str, tuple[list[type], Any]] = {
         "headless": ([bool], False),

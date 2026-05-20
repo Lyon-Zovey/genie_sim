@@ -112,9 +112,10 @@ def main():
 
             if not ui_builder.my_world.is_playing():
                 if step % 100 == 0:
-                    print("**** simulation paused ****")
+                    print("**** simulation paused ****", flush=True)
+                    if task_manager._worker_thread and not task_manager._worker_thread.is_alive():
+                        print("[WARN] worker thread is DEAD!", flush=True)
                 step += 1
-
                 continue
     except KeyboardInterrupt:
         print("main loop: KeyboardInterrupt received")

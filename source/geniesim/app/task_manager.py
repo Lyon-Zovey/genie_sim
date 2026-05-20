@@ -3,6 +3,7 @@
 # License: Mozilla Public License Version 2.0
 
 import threading
+import traceback
 
 
 class TaskManager:
@@ -20,6 +21,15 @@ class TaskManager:
             self._worker_thread.join(timeout=timeout)
 
     def worker(self):
-        from geniesim.benchmark.task_benchmark import main as benchmark_main
-
-        benchmark_main(self.benchmark_config, self.api_core)
+        import sys
+        try:
+            print("[TaskManager] worker thread started", flush=True)
+            from geniesim.benchmark.task_benchmark import main as benchmark_main
+            print("[TaskManager] import done, calling benchmark_main", flush=True)
+            benchmark_main(self.benchmark_config, self.api_core)
+            print("[TaskManager] benchmark_main returned", flush=True)
+        except Exception as e:
+            traceback.print_exc()
+            print(f"[TaskManager] worker thread crashed: {e}", flush=True)
+            sys.stdout.flush()
+            sys.stderr.flush()
