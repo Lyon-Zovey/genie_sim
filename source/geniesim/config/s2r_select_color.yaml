@@ -1,7 +1,7 @@
 app:
   enable_rate_limit: true
   enable_ros: false
-  livestream: 2
+  livestream: 0
 benchmark:
   task_name: table_task_g1
   sub_task_name: pick_block_color

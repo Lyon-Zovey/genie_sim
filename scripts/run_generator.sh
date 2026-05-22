@@ -13,4 +13,4 @@ PYTHON="/geniesim/generator_env/bin/python"
 # "$PYTHON" "$PY_PATH" "$@"
 # PYTHONPATH="${PYTHONPATH:-}:${PYTHONPATH:+/}geniesim/main/source" "$PYTHON" "$PY_PATH" "$@"
 
-sudo -u "#1000" -g "#1000" env PYTHONPATH="${PYTHONPATH:-}${PYTHONPATH:+:}/geniesim/main/source" "$PYTHON" "$PY_PATH" "$@"
+PYTHONPATH="${PYTHONPATH:-}${PYTHONPATH:+:}/geniesim/main/source" "$PYTHON" "$PY_PATH" "$@"

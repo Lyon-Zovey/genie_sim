@@ -1,60 +1,61 @@
-# Copyright (c) 2023-2026, AgiBot Inc. All Rights Reserved.
-# Author: Genie Sim Team
-# License: Mozilla Public License Version 2.0
-
 from helper import *
+import numpy as np
 
 """
-scene_name: tilted_beverage_bottle_scene
-description: Randomly place one of three beverage bottles at specific positions with 30-degree tilt
+scene_name: book_on_left_table_center
+description: Place benchmark_book_03 at the center of the top surface of benchmark_desk_decoration_007,
+with both table and book shifted to the left side of the scene and tagged with left keywords.
 """
 
 
 @register()
-def place_tilted_beverage_bottle() -> Shape:
-    """
-    Randomly select one of three positions and place the corresponding beverage bottle with 30-degree tilt.
-    Position 1: (-0.3258698616779385, -0.961097970731979, 1.1171925071287725) -> genie_beverage_bottle_007
-    Position 2: (-0.3258698616779385, -0.6978373934951332, 1.1171925071287725) -> genie_beverage_bottle_008
-    Position 3: (-0.3258698616779385, -0.46964291938826225, 1.1171925071287725) -> genie_beverage_bottle_009
-    """
-    # Define three position options with corresponding object IDs
-    position_options = [
-        ((-0.3258698616779385, -0.961097970731979, 1.1171925071287725), "genie_beverage_bottle_007"),
-        ((-0.3258698616779385, -0.6978373934951332, 1.1171925071287725), "genie_beverage_bottle_008"),
-        ((-0.3258698616779385, -0.46964291938826225, 1.1171925071287725), "genie_beverage_bottle_009"),
-    ]
+def book_on_left_table_center() -> Shape:
+    left_offset = np.array([0.0, 1.2, 0.0])
 
-    # Randomly select one position and object
-    selected_index = np.random.choice(len(position_options))
-    selected_position, selected_oid = position_options[selected_index]
-
-    # Create beverage bottle object
-    bottle_shape = library_call(
+    table_shape = library_call(
         "usd",
-        oid=selected_oid,
-        keywords=["beverage_bottle", "bottle", "drink", f"bottle_{selected_index + 7}"],
+        oid="benchmark_desk_decoration_007",
+        keywords=[
+            "left_center_table",
+            "table",
+            "desk_decoration",
+            "support_surface",
+            "left",
+        ],
+    )
+    table_shape = transform_shape(table_shape, translation_matrix(left_offset))
+
+    table_info = get_object_info(table_shape)
+    table_center = np.array(table_info["center"])
+    table_top_z = float(table_info["max"][2])
+
+    book_shape = library_call(
+        "usd",
+        oid="benchmark_book_03",
+        keywords=[
+            "left_center_book",
+            "book",
+            "hardcover",
+            "reading",
+            "left",
+        ],
     )
 
-    # Get object center for rotation
-    bottle_center = compute_shape_center(bottle_shape)
+    book_info = get_object_info(book_shape)
+    book_center = np.array(book_info["center"])
 
-    # Apply 30-degree tilt around X-axis (forward tilt)
-    tilt_angle = math.pi / 6  # 30 degrees in radians
-    bottle_shape = transform_shape(
-        bottle_shape, rotation_matrix(angle=tilt_angle, direction=(1, 0, 0), point=bottle_center)
+    translation = np.array(
+        [
+            table_center[0] - book_center[0],
+            table_center[1] - book_center[1],
+            table_top_z - book_info["min"][2],
+        ]
     )
+    placed_book = transform_shape(book_shape, translation_matrix(translation))
 
-    # Get object info after rotation for proper placement
-    object_info = get_object_info(bottle_shape)
-    object_center = object_info["center"]
-
-    # Translate to selected position
-    final_shape = transform_shape(bottle_shape, translation_matrix(np.array(selected_position) - object_center))
-
-    return final_shape
+    return concat_shapes(table_shape, placed_book)
 
 
 @register()
 def root_scene() -> Shape:
-    return place_tilted_beverage_bottle()
+    return library_call("book_on_left_table_center")

@@ -1,7 +1,7 @@
 {
-  "api_key": "",
-  "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  "dashscope_mode": true,
+  "api_key": "sk-vEWXcQYjXz0rH3h7ymzTUlFMFz6l1QkIVoyePcoERuUJv8lj",
+  "base_url": "https://api.n1n.ai/v1",
+  "dashscope_mode": false,
   "dimension": 2048,
-  "model": "text-embedding-v4"
+  "model": "text-embedding-3-large"
 }

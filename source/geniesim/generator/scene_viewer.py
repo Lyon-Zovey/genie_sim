@@ -25,7 +25,16 @@ system_utils.check_and_fix_env()
 
 simulation_app = SimulationApp(
     {
-        "headless": False,
+        "headless": True,
+        "experience": os.path.join(
+            os.environ.get("ISAACSIM_HOME", "/isaac-sim"),
+            "apps",
+            "isaacsim.exp.full.streaming.kit",
+        ),
+        "extra_args": [
+            "--no-window",
+            "--/app/livestream/port=49100",
+        ],
     }
 )
 from isaacsim.core.api import World
@@ -145,6 +154,7 @@ def run_generator_subprocess():
 
     try:
         # Execute subprocess and capture output
+        clean_env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
         process = subprocess.Popen(
             [GENERATOR_SCRIPT],
             stdout=subprocess.PIPE,
@@ -152,6 +162,7 @@ def run_generator_subprocess():
             text=True,
             bufsize=1,
             universal_newlines=True,
+            env=clean_env,
         )
 
         output_lines = []
