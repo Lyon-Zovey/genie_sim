@@ -98,6 +98,8 @@ def search_assets(
     """
     try:
         logger.info(f"Searching assets: {keyword}, topk: {topk}")
+        exclude_regex = exclude_regex if exclude_regex and exclude_regex != "string" else None
+        include_regex = include_regex if include_regex and include_regex != "string" else None
         results = db.search(keyword, topk, exclude_regex, include_regex, scene_description)
         logger.info(f"Search results: {len(results)} assets found")
         return results
