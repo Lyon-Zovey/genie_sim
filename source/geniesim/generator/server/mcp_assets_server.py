@@ -59,16 +59,16 @@ def search_assets(
     exclude_regex: Annotated[
         str,
         Field(
-            None,
-            description="Regular expression pattern to match asset_id. Assets with matching asset_id will be excluded from search results. Use '|' for OR logic. Examples: 'omni6D', 'omni6D.*', 'omni6D.*|stf.*' (exclude assets starting with 'omni6D' or 'stf'). Default is None (no exclusion).",
+            "",
+            description="Regular expression pattern to match asset_id. Assets with matching asset_id will be excluded from search results. Use '|' for OR logic. Examples: 'omni6D', 'omni6D.*', 'omni6D.*|stf.*' (exclude assets starting with 'omni6D' or 'stf'). Leave empty string for no exclusion.",
             examples=["omni6D", "omni6D.*", "omni6D.*|sft.*"],
         ),
     ],
     include_regex: Annotated[
         str,
         Field(
-            None,
-            description="Regular expression pattern to match asset_id. Assets with matching asset_id will be included in search results. Use '|' for OR logic. Examples: 'omni6D', 'omni6D.*', 'omni6D.*|stf.*' (include assets starting with 'omni6D' or 'stf'). Default is None (no inclusion).",
+            "",
+            description="Regular expression pattern to match asset_id. Assets with matching asset_id will be included in search results. Use '|' for OR logic. Examples: 'omni6D', 'omni6D.*', 'omni6D.*|stf.*' (include assets starting with 'omni6D' or 'stf'). Leave empty string for no inclusion.",
             examples=["omni6D", "omni6D.*", "omni6D.*|sft.*"],
         ),
     ],
