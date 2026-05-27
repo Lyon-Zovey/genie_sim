@@ -37,6 +37,7 @@ release_pkg
 
 docs/
 source/geniesim/benchmark/config/llm_task
+data/
 
 # ROS
 build/
