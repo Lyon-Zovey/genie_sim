@@ -1,6 +1,7 @@
 app:
   enable_rate_limit: true
   enable_ros: true
+  livestream: 2
 benchmark:
   num_episode: 3
   task_name: table_task_1_g2
