@@ -99,6 +99,9 @@ class CommandController:
         self.graph_path = []
         self.camera_graph_path = []
         self.loop_count = 0
+        self._traj_local_count = 0   # per-task traj index (reset each new task)
+        self._traj_task_name = None  # tracks which task the local count belongs to
+        self._sf_cam_data_root = None  # rbs_data/<task>/camera_data/
         self.publish_ros = publish_ros
         self.rendering_step = rendering_step
         self.process = []
@@ -131,6 +134,10 @@ class CommandController:
         self.camera_info_list = {}
         self.fps = 60
         self.cur_runtime_checker = None
+        # SceneFlow recorder (non-ROS direct recording path)
+        self.sceneflow_recorder = None
+        self._sf_frame_counter = 0       # physics steps since recording started
+        self._sf_frame_interval = 1      # capture every N physics steps (set from fps)
         # Timing statistics related
         self.timing_stats = {}  # Store total time for each function {function_name: total_time}
         self.timing_lock = threading.Lock()  # For thread-safe timing statistics
@@ -429,7 +436,42 @@ class CommandController:
                 if self.publish_ros:
                     for ros_publisher_node in self.ros_publishers:
                         ros_publisher_node.tick(self.ui_builder.my_world.current_time)
-                    return
+
+            self._sceneflow_append_frame()
+
+    def _sceneflow_append_frame(self):
+        """Capture one frame of SceneFlow data if recorder is active and interval reached."""
+        if self.sceneflow_recorder is None:
+            return
+        if not self.ui_builder.my_world.is_playing():
+            return
+
+        self._sf_frame_counter += 1
+        if self._sf_frame_counter % self._sf_frame_interval != 0:
+            return
+
+        stage = omni.usd.get_context().get_stage()
+
+        # Collect world-frame poses of all tracked objects
+        object_poses = {}
+        from scipy.spatial.transform import Rotation as _R
+        for prim_path in self.sceneflow_recorder.object_prim_paths:
+            prim = stage.GetPrimAtPath(prim_path) if stage else None
+            if prim is None or not prim.IsValid():
+                continue
+            xform = XFormPrim(prim_path=prim_path)
+            pos, quat_wxyz = xform.get_world_pose()
+            rot = _R.from_quat([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]]).as_matrix()
+            T = np.eye(4, dtype=np.float32)
+            T[:3, :3] = rot
+            T[:3, 3]  = pos
+            object_poses[prim_path] = T
+
+        # Annotators read pixel data directly — no Camera re-init
+        try:
+            self.sceneflow_recorder.capture_frame(object_poses=object_poses)
+        except Exception as _e:
+            logger.warning(f"SceneFlowRecorder capture_frame error: {_e}")
 
     def get_camera_intrinsic_info(self, prim_path):
         camera_info = [
@@ -747,14 +789,32 @@ class CommandController:
                 self.task_name = self.data["task_name"]
                 self.fps = self.data["fps"]
                 current_directory = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                root_path = current_directory + "/recording_data/"
-                recording_path = root_path + self.task_name
+
+                # Original recording path (ROS bag, observations, post_proc, etc.)
+                recording_path = current_directory + "/recording_data/" + self.task_name
                 if os.path.isdir(recording_path):
                     folder_index = 1
                     while os.path.isdir(recording_path + str(folder_index)):
                         folder_index += 1
                     recording_path = recording_path + str(folder_index)
                 self.path_to_save = recording_path
+
+                # SceneFlow output root — independent from path_to_save
+                # Writes to rbs_data/<sf_task_name>/camera_data/traj_N/
+                # Strip leading "[", trailing "]", and trailing episode suffix "_N"
+                # so "[sort_the_fruit_into_the_box_apple_g2_3]" → "sort_the_fruit_into_the_box_apple_g2"
+                import re as _re
+                _raw = self.task_name.strip("[]")
+                sf_task_name = _re.sub(r"_\d+$", "", _raw)
+                self._sf_cam_data_root = os.path.join(
+                    current_directory, "rbs_data", sf_task_name, "camera_data"
+                )
+                os.makedirs(self._sf_cam_data_root, exist_ok=True)
+
+                # reset per-task traj counter when the task name (without episode suffix) changes
+                if self._traj_task_name != sf_task_name:
+                    self._traj_local_count = 0
+                    self._traj_task_name = sf_task_name
                 self.camera_info_list = {}
                 tf_target = []
                 for prim_path in self.data["camera_prim_list"]:
@@ -935,6 +995,71 @@ class CommandController:
                     self.data_to_send = "Start"
                 else:
                     raise ValueError("publish ros is not enabled")
+
+                # ── SceneFlow recorder: initialise regardless of ROS mode ──────
+                # Compute how many physics steps between captured frames so that
+                # we record at the requested task fps (not at physics rate).
+                rendering_dt = self.ui_builder.my_world.get_rendering_dt()
+                physics_dt   = self.ui_builder.my_world.get_physics_dt()
+                task_fps = self.data.get("fps", self.fps) or 10
+                steps_per_render = max(1, round(rendering_dt / physics_dt))
+                renders_per_frame = max(1, round((1.0 / task_fps) / rendering_dt))
+                self._sf_frame_interval = steps_per_render * renders_per_frame
+                self._sf_frame_counter  = 0
+
+                import sys as _sys
+                import os as _os
+                # rbs_genie_scripts/ lives two levels above source/data_collection/
+                # On the host: <repo_root>/rbs_genie_scripts/
+                # In the container it is mounted at /geniesim/main/rbs_genie_scripts/
+                # via the -v added to run_data_collection.sh.
+                _repo_root = _os.path.dirname(
+                    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+                )
+                _rbs_dir = _os.path.join(_repo_root, "rbs_genie_scripts")
+                if not _os.path.isdir(_rbs_dir):
+                    # Fallback: look relative to SIM_REPO_ROOT (container path)
+                    _sim_root = _os.environ.get("SIM_REPO_ROOT", "/geniesim/main/data_collection")
+                    _rbs_dir = _os.path.join(_os.path.dirname(_sim_root), "rbs_genie_scripts")
+                if _rbs_dir not in _sys.path:
+                    _sys.path.insert(0, _rbs_dir)
+                from sceneflow_recorder import SceneFlowRecorder
+
+                # Only record 3 cameras — skip head_left/head_right (1920×1536 each)
+                # to reduce per-trajectory frame-buffer memory by ~40%.
+                _SF_SKIP = {"head_left_Camera", "head_right_Camera"}
+                sf_candidates = [
+                    p for p in self.data["camera_prim_list"]
+                    if p.split("/")[-1] not in _SF_SKIP
+                ]
+                import random as _random
+                sf_cam_list = [_random.choice(sf_candidates)] if sf_candidates else []
+                logger.info(f"SceneFlow single-camera mode: selected {sf_cam_list}")
+
+                cam_resolutions = {
+                    prim: tuple(self.cameras[prim])
+                    for prim in sf_cam_list
+                    if prim in self.cameras
+                }
+                self.sceneflow_recorder = SceneFlowRecorder(
+                    output_root=self._sf_cam_data_root,
+                    traj_idx=self._traj_local_count,
+                    camera_prim_list=sf_cam_list,
+                    fps=float(task_fps),
+                    task_id=self.task_name or "",
+                    object_prim_paths=list(self.object_asset_dict.keys()),
+                    camera_resolutions=cam_resolutions,
+                    prim_to_seg_id={
+                        prim: idx + 1
+                        for idx, prim in enumerate(self.object_asset_dict.keys())
+                    },
+                    target_prim_paths=self.data.get("target_prim_paths") or None,
+                )
+                self.sceneflow_recorder.init_annotators()
+                logger.info(
+                    f"SceneFlowRecorder initialised: {self._sf_cam_data_root}/traj_{self._traj_local_count}"
+                    f"  interval={self._sf_frame_interval} physics steps"
+                )
         elif self.data["stopRecording"]:
             with self._timing_context("stop_recording"):
                 if self.publish_ros:
@@ -1025,61 +1150,24 @@ class CommandController:
                     "fail_stage_step": self.data["failStep"],
                     "object_asset_dict": self.object_asset_dict,
                 }
-                task_info_path = self.path_to_save + "/recording_info.json"
-                with open(task_info_path, "w") as f:
-                    json.dump(task_info, f, indent=4)
-                with open(
-                    self.path_to_save + "/frame_state.json",
-                    "w",
-                    encoding="utf-8",
-                ) as f:
-                    json.dump(self.frame_status, f, indent=4)
-                metric_config_path = self.path_to_save + "/metric_config.json"
-                with open(metric_config_path, "w") as f:
-                    json.dump(config, f, indent=4)
-
-                total_time = 0
-                clean_once = True
-                while len(self.extract_process) > MAX_EXTRACT_PROCESS_NUM or clean_once:
-                    new_process = []
-                    clean_once = False
-                    for p, log_file in self.extract_process:
-                        if p.poll():
-                            new_process.append((p, log_file))
-                        else:
-                            log_file.close()
-                    self.extract_process = new_process
-                    time.sleep(0.1)
-                    total_time += 0.1
-                    if total_time > 120:
-                        process, log_file = self.extract_process[0]
-                        os.killpg(os.getpgid(process.pid), signal.SIGINT)
-                        log_file.close()
-                        logger.info("Extract process waiting timeout 120s, kill it")
-
-                log_file = open(self.path_to_save + "/extract.log", "w")
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                extract_sub_process = subprocess.Popen(
-                    [
-                        sys.executable,
-                        f"{current_dir}/recording/extract_and_convert_data.py",
-                        "--path_to_save",
-                        self.path_to_save,
-                        "--task_info_path",
-                        task_info_path,
-                        "--metric_config_path",
-                        metric_config_path,
-                    ],
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    preexec_fn=os.setsid,
-                )
-                logger.info("Extract process started")
-                self.extract_process.append((extract_sub_process, log_file))
+                # SceneFlow-only mode: do NOT create recording_data/ at all.
+                # Only flush to rbs_data/; skip extract_and_convert_data.py entirely.
+                if self.sceneflow_recorder is not None:
+                    try:
+                        self.sceneflow_recorder.flush()
+                        logger.info(
+                            f"SceneFlowRecorder flushed → {self.sceneflow_recorder.traj_dir}"
+                        )
+                        self._traj_local_count += 1
+                    except Exception as _e:
+                        logger.error(f"SceneFlowRecorder flush failed: {_e}")
+                    self.sceneflow_recorder = None
+                logger.info("SceneFlow-only mode: skipping extract_and_convert_data.py")
             else:
                 # remove folder if exist
                 if os.path.exists(self.path_to_save):
                     shutil.rmtree(self.path_to_save)
+                self.sceneflow_recorder = None
 
         self.object_asset_dict = {}
         self.data_to_send = str(isSuccess)

@@ -411,4 +411,5 @@ class IsaacSimRpcRobot(Robot):
             "joint_names": np.array(joint_names),
             "link_poses": np.array(link_poses),
         }
-        return np.array(ik_result), info
+        n = 1 if single_mode else len(poses)
+        return np.array(ik_result)[:n], info

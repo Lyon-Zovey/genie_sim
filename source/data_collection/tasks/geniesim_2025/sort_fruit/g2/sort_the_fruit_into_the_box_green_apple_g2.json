@@ -554,24 +554,6 @@
                 "object_id": "geniesim_2025_target_storage_box",
                 "primitive": null
             }
-        },
-        {
-            "action": "reset",
-            "action_description": {
-                "action_text": "{左/右}臂复位",
-                "english_action_text": "{Left/Right} arm resets"
-            },
-            "active": {
-                "object_id": "gripper",
-                "primitive": null
-            },
-            "extra_params": {
-                "arm": "auto"
-            },
-            "passive": {
-                "object_id": "gripper",
-                "primitive": null
-            }
         }
     ],
     "task": "sort_the_fruit_into_the_box_green_apple_g2",

@@ -204,6 +204,7 @@ CONTAINER_ID=$(docker run -d --name $CONTAINER_NAME \
     -v /dev/input:/dev/input:rw \
     -v $SIM_ASSETS:/geniesim/main/source/geniesim/assets:rw \
     -v $CURRENT_DIR:/geniesim/main/data_collection:rw \
+    -v $(dirname $(dirname $CURRENT_DIR))/rbs_genie_scripts:/geniesim/main/rbs_genie_scripts:ro \
     -v $LOG_DIR:/geniesim/main/data_collection/logs/${TASK_NAME}:rw \
     -w /geniesim/main/data_collection \
     registry.agibot.com/genie-sim/open_source-data-collection:latest \

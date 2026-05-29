@@ -203,7 +203,7 @@
             "/G1/gripper_l_base_link/Left_Camera"
         ],
         "fps": 30,
-        "num_of_episode": 5,
+        "num_of_episode": 20,
         "noised_probability": 0.2
     },
     "robot": {
@@ -417,24 +417,6 @@
             },
             "passive": {
                 "object_id": "geniesim_2025_target_storage_box",
-                "primitive": null
-            }
-        },
-        {
-            "action": "reset",
-            "action_description": {
-                "action_text": "{左/右}臂复位",
-                "english_action_text": "{Left/Right} arm resets"
-            },
-            "active": {
-                "object_id": "gripper",
-                "primitive": null
-            },
-            "extra_params": {
-                "arm": "auto"
-            },
-            "passive": {
-                "object_id": "gripper",
                 "primitive": null
             }
         }

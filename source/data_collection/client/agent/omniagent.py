@@ -117,6 +117,7 @@ class DataCollectionAgent(BaseAgent):
                 "joint_position": True,
                 "gripper": True,
                 "additional_parameters": json.dumps(recording_setting),
+                "target_prim_paths": getattr(self, "_task_target_prim_paths", []),
             },
         )
 
@@ -162,6 +163,21 @@ class DataCollectionAgent(BaseAgent):
                 if obj_id == "gripper" or obj_id in task_related_objs:
                     continue
                 task_related_objs.append(obj_id)
+        # 保存 target prim paths 供 start_recording 使用
+        # active 是 gripper 时（pick 类任务），取 passive 作为 target；否则取 active
+        task_active_objs = []
+        for stage in task_info["stages"]:
+            active_oid = stage["active"]["object_id"]
+            passive_oid = stage["passive"]["object_id"]
+            if active_oid == "gripper":
+                oid = passive_oid
+            else:
+                oid = active_oid
+            if oid != "gripper" and oid not in task_active_objs:
+                task_active_objs.append(oid)
+        self._task_target_prim_paths = [
+            f"/World/Objects/{oid}" for oid in task_active_objs
+        ]
 
         target_lookat_point = []
         for obj in task_info["objects"]:

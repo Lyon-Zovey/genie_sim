@@ -20,3 +20,4 @@ recording_data
 config/robot_cfg/*/*_tmp.yaml
 tmp/
 logs
+rbs_data
