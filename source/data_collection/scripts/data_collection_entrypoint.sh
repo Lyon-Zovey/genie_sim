@@ -234,7 +234,9 @@ if [ "$HEADLESS" = true ]; then
 fi
 
 if [ "$RECORD" = true ]; then
-    DATA_COLLECTOR_ARGS="$DATA_COLLECTOR_ARGS --publish_ros"
+    # SceneFlow-only mode: publish ROS topics (needed for robot control) but
+    # skip ros2 bag record to avoid writing to recording_data/.
+    DATA_COLLECTOR_ARGS="$DATA_COLLECTOR_ARGS --publish_ros --no_ros_bag"
     MAIN_ARGS="$MAIN_ARGS --use_recording"
 fi
 

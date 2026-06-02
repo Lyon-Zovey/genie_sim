@@ -105,6 +105,10 @@ class DataCollectionAgent(BaseAgent):
         render_semantic=False,
         recording_setting={},
     ):
+        merged_setting = dict(recording_setting)
+        target_prim_paths = getattr(self, "_task_target_prim_paths", [])
+        if target_prim_paths:
+            merged_setting["target_prim_paths"] = target_prim_paths
         self.robot.client.start_recording(
             task_name=task_name,
             fps=fps,
@@ -116,8 +120,7 @@ class DataCollectionAgent(BaseAgent):
                 },
                 "joint_position": True,
                 "gripper": True,
-                "additional_parameters": json.dumps(recording_setting),
-                "target_prim_paths": getattr(self, "_task_target_prim_paths", []),
+                "additional_parameters": json.dumps(merged_setting),
             },
         )
 

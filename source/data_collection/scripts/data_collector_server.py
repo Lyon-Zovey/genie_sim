@@ -37,6 +37,8 @@ parser.add_argument(
     default=False,
 )
 parser.add_argument("--publish_ros", action="store_true", default=False)
+parser.add_argument("--no_ros_bag", action="store_true", default=False,
+                    help="Skip ros2 bag record even when --publish_ros is set (SceneFlow-only mode)")
 parser.add_argument(
     "--physics_step",
     type=int,
@@ -88,6 +90,7 @@ server_function = CommandController(
     enable_physics=args.enable_physics,
     enable_curobo=args.enable_curobo,
     publish_ros=args.publish_ros,
+    no_ros_bag=args.no_ros_bag,
     rendering_step=int(1 / rendering_dt),
     debug=args.debug,
 )

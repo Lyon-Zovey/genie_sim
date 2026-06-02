@@ -234,6 +234,14 @@ class SceneFlowRecorder:
                         ).astype(np.int32)
                     else:
                         seg = id_img.astype(np.int32)
+                    # Remap Isaac Sim instance IDs → our sequential seg IDs using
+                    # the idToLabels dict provided by the annotator.  Without this,
+                    # Isaac Sim's own ID=1 (typically background/table/robot) would
+                    # collide with our prim_to_seg_id[first_object]=1, causing the
+                    # mask to cover most of the frame.
+                    id_to_labels = seg_data.get("info", {}).get("idToLabels", {})
+                    if id_to_labels and self._prim_to_seg_id:
+                        seg = self._remap_seg(seg, id_to_labels)
                 else:
                     seg = np.zeros((H, W), dtype=np.int32)
             else:
@@ -428,6 +436,38 @@ class SceneFlowRecorder:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _remap_seg(self, seg: np.ndarray, id_to_labels: dict) -> np.ndarray:
+        """Remap Isaac Sim instance pixel IDs to our sequential prim_to_seg_id values.
+
+        Isaac Sim assigns arbitrary integer IDs to prims.  id_to_labels is the
+        {str(isaac_id): {"class": label_name}} dict from the annotator info.
+        We build a lookup table: isaac_id → our_seq_id (0 = background/unknown).
+        """
+        # Build label_name → our_seq_id from _prim_to_seg_id
+        # prim paths are like "/World/Objects/geniesim_2025_billiards_blue"
+        # label_name registered in Isaac Sim is the last segment of the prim path
+        label_to_seq: dict[str, int] = {}
+        for prim_path, seq_id in self._prim_to_seg_id.items():
+            label = prim_path.split("/")[-1]
+            label_to_seq[label] = seq_id
+
+        # Build LUT: isaac_id → seq_id
+        max_isaac_id = max((int(k) for k in id_to_labels), default=0)
+        lut = np.zeros(max_isaac_id + 2, dtype=np.int32)  # default 0 = background
+        for isaac_id_str, entry in id_to_labels.items():
+            try:
+                isaac_id = int(isaac_id_str)
+            except (ValueError, TypeError):
+                continue
+            label = entry.get("class", "") if isinstance(entry, dict) else str(entry)
+            seq_id = label_to_seq.get(label, 0)
+            if 0 <= isaac_id < len(lut):
+                lut[isaac_id] = seq_id
+
+        # Apply LUT — clamp out-of-range values to 0
+        remapped = np.where(seg < len(lut), lut[np.clip(seg, 0, len(lut) - 1)], 0)
+        return remapped.astype(np.int32)
 
     def _write_camera_data(self, buf: dict, out_dir: Path, cam_name: str) -> None:
         rgb_list   = buf["rgb"]

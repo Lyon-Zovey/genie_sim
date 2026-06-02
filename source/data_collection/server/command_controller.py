@@ -62,6 +62,7 @@ class CommandController:
         enable_physics=False,
         enable_curobo=False,
         publish_ros=False,
+        no_ros_bag=False,
         rendering_step=60,
         debug=False,
     ):
@@ -103,6 +104,7 @@ class CommandController:
         self._traj_task_name = None  # tracks which task the local count belongs to
         self._sf_cam_data_root = None  # rbs_data/<task>/camera_data/
         self.publish_ros = publish_ros
+        self.no_ros_bag = no_ros_bag
         self.rendering_step = rendering_step
         self.process = []
         self.extract_process = []
@@ -850,32 +852,43 @@ class CommandController:
                         )
                     tf_target.append(prim_path)
 
+                # Parse additional_cam_parameters here so it is available both
+                # inside the publish_ros block and for SceneFlowRecorder below.
+                additional_cam_parameters = self.data.get("additional_cam_parameters", "")
+                if additional_cam_parameters:
+                    try:
+                        additional_cam_parameters = json.loads(additional_cam_parameters)
+                    except (json.JSONDecodeError, TypeError):
+                        additional_cam_parameters = {}
+                if not isinstance(additional_cam_parameters, dict):
+                    additional_cam_parameters = {}
+
                 if self.publish_ros:
                     ros_cmd_distro = os.getenv("ROS_CMD_DISTRO", "humble")
                     exclude_args = "--exclude-regex" if ros_cmd_distro != "humble" else "--exclude"
-                    command_str = f"""
-                        unset PYTHONPATH
-                        unset LD_LIBRARY_PATH
-                        source /opt/ros/{ros_cmd_distro}/setup.bash
-                        ros2 bag record -o {recording_path} {exclude_args} '.*_rgb(?!_)' -a
-                        """
-                    logger.info("publish_ros command: " + command_str)
-                    process = subprocess.Popen(
-                        command_str,
-                        shell=True,
-                        executable="/bin/bash",
-                        preexec_fn=os.setsid,
-                    )
-                    self.process.append(process)
+                    if not self.no_ros_bag:
+                        command_str = f"""
+                            unset PYTHONPATH
+                            unset LD_LIBRARY_PATH
+                            source /opt/ros/{ros_cmd_distro}/setup.bash
+                            ros2 bag record -o {recording_path} {exclude_args} '.*_rgb(?!_)' -a
+                            """
+                        logger.info("publish_ros command: " + command_str)
+                        process = subprocess.Popen(
+                            command_str,
+                            shell=True,
+                            executable="/bin/bash",
+                            preexec_fn=os.setsid,
+                        )
+                        self.process.append(process)
+                    else:
+                        logger.info("no_ros_bag=True: skipping ros2 bag record")
                     frequency = (int)(
                         1 / (self.ui_builder.my_world.get_rendering_dt() * self.data["fps"])
                     )  # this is actually step_size in the condition of 60 fps
                     logger.info(
                         f"frequency: {frequency}, fps: {self.data['fps']}, rendering_dt: {self.ui_builder.my_world.get_rendering_dt()}"
                     )
-                    additional_cam_parameters = self.data.get("additional_cam_parameters", "")
-                    if additional_cam_parameters:
-                        additional_cam_parameters = json.loads(additional_cam_parameters)
                     noised_probability = additional_cam_parameters.get("noised_probability", 0.2)
                     logger.info(f"noised_probability{noised_probability}")
                     noise_parameters = additional_cam_parameters.get("noise_parameters", {})
@@ -1053,7 +1066,7 @@ class CommandController:
                         prim: idx + 1
                         for idx, prim in enumerate(self.object_asset_dict.keys())
                     },
-                    target_prim_paths=self.data.get("target_prim_paths") or None,
+                    target_prim_paths=additional_cam_parameters.get("target_prim_paths") or None,
                 )
                 self.sceneflow_recorder.init_annotators()
                 logger.info(

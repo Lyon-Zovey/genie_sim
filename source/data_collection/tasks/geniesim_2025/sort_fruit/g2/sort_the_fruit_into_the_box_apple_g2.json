@@ -342,7 +342,7 @@
       "/G2/head_link3/head_left_Camera"
     ],
     "fps": 30,
-    "num_of_episode": 8,
+    "num_of_episode": 5,
     "noised_probability": 0.1
   },
   "robot": {
