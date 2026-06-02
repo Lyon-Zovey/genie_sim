@@ -1,7 +1,7 @@
 """
 Pair-check visualization: RGB / depth aligned with sceneflow via pixel (u,v).
 
-For each pixel (i,j), sceneflow stores a 3D point flow[t,i,j] in the OpenGL
+For each pixel (i,j), sceneflow stores a 3D point flow[t,i,j] in the OpenCV
 camera frame and RGB stores a color rgb[t,i,j]. Coloring the sceneflow point
 cloud by the SAME (i,j) of the RGB image should produce a recognizable scene.
 
@@ -26,10 +26,6 @@ import viser.transforms as tf
 sys.path.insert(0, str(Path(__file__).parent.parent / "traj2sceneflow"))
 from flow_compress import decompress_one_flow
 
-
-FLIP3 = np.array([1.0, -1.0, -1.0], dtype=np.float32)
-FLIP4 = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float32)
-ROT_Z_180 = np.diag([-1.0, -1.0, 1.0, 1.0]).astype(np.float32)
 
 
 def load_first_flow(traj_dir: Path):
@@ -112,12 +108,6 @@ def main():
     ap.add_argument("--objflow-trails", type=int, default=40,
                     help="Number of vertex trajectories (polylines) to draw "
                          "from frame 0..current t. 0 = no trails.")
-    ap.add_argument("--flow-frame", choices=["opengl", "opencv"], default="opengl",
-                    help="Coordinate frame of sceneflow data. "
-                         "'opengl' = raw (x right, y up, z back); "
-                         "'opencv' = convert via (1,-1,-1) to (x right, y down, z forward).")
-    ap.add_argument("--match-depth-frame", action="store_true",
-                    help="Convert sceneflow to the same OpenCV camera frame used by depth_video_int16mm_dt.b2nd.")
     args = ap.parse_args()
 
     traj_dir = args.traj_dir
@@ -205,15 +195,7 @@ def main():
             except Exception as e:
                 print(f"  failed to load {mp.name}: {e}")
 
-    if args.match_depth_frame:
-        flow = flow[:, ::-1, :, :].copy()
-        flow = flow * FLIP3
-        print("  [--match-depth-frame] flipped flow along image height and applied (1,-1,-1) to match depth OpenCV camera frame")
-    elif args.flow_frame == "opencv":
-        flow = flow * FLIP3
-        print("  [--flow-frame opencv] flow *= (1,-1,-1)  (OpenGL -> OpenCV)")
-    else:
-        print("  [--flow-frame opengl] raw OpenGL frame, no conversion")
+    print("  sceneflow is treated as OpenCV camera frame")
 
     # Now both flow values and RGB pixels live under the SAME (u,v) indexing
     # and the SAME OpenCV camera frame. cam2world is the OpenCV cam->world.

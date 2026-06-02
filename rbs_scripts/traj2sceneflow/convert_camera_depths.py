@@ -8,7 +8,7 @@ import numpy as np
 def depth_to_camera_points(
     depth: np.ndarray, K: np.ndarray, far_mm: float | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Convert one depth image to camera-space points.
+    """Convert one depth image to OpenCV camera-space points.
 
     Returns:
         pts_cam: (N,3)
@@ -36,9 +36,8 @@ def depth_to_camera_points(
     cx = float(K[0, 2])
     cy = float(K[1, 2])
     x = (uu - cx) * z_m / fx
-    # render_depth applies [::-1] so row-0 = camera -y; y increases with v
     y = (vv - cy) * z_m / fy
-    z_cam = -z_m
+    z_cam = z_m
     return np.stack([x, y, z_cam], axis=1), valid
 
 

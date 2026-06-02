@@ -987,7 +987,16 @@ class DataCollectionAgent(BaseAgent):
                 logger.warning(f"Task {task_file} failed")
             time.sleep(2)
             self.robot.client.stop_recording()
-            # reset object pose
+
+            step_id = -1
+            fail_stage_step = [stage_id, step_id] if not success else [-1, -1]
+
+            task_info.copy()
+            self.robot.client.send_task_status(success, fail_stage_step)
+
+            # Reset objects only after send_task_status(). On the server side,
+            # task_status triggers SceneFlowRecorder.flush(); resetting earlier
+            # pollutes the final recorded object poses with sentinel values.
             for obj_id in objects:
                 if obj_id == "gripper":
                     continue
@@ -999,11 +1008,6 @@ class DataCollectionAgent(BaseAgent):
                 poses.append(object_pose)
                 self.robot.client.set_object_pose(poses, [])
 
-            step_id = -1
-            fail_stage_step = [stage_id, step_id] if not success else [-1, -1]
-
-            task_info.copy()
-            self.robot.client.send_task_status(success, fail_stage_step)
             if success:
                 logger.info(">>>>>>>>>>>>>>>>>>>>  TASK SUCCESS ! <<<<<<<<<<<<<<<<<<<<")
 

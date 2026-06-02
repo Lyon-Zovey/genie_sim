@@ -1038,16 +1038,29 @@ class CommandController:
                     _sys.path.insert(0, _rbs_dir)
                 from sceneflow_recorder import SceneFlowRecorder
 
-                # Only record 3 cameras — skip head_left/head_right (1920×1536 each)
-                # to reduce per-trajectory frame-buffer memory by ~40%.
-                _SF_SKIP = {"head_left_Camera", "head_right_Camera"}
-                sf_candidates = [
-                    p for p in self.data["camera_prim_list"]
-                    if p.split("/")[-1] not in _SF_SKIP
+                # Record a fixed head view for SceneFlow collection.
+                # Prefer the main forward-facing head camera, with fallbacks for
+                # robot-specific naming.
+                _head_name_priority = [
+                    "Head_Camera",        # G1
+                    "head_front_Camera",  # G2 main head camera
+                    "head_right_Camera",  # fallback
+                    "head_left_Camera",   # fallback
                 ]
-                import random as _random
-                sf_cam_list = [_random.choice(sf_candidates)] if sf_candidates else []
-                logger.info(f"SceneFlow single-camera mode: selected {sf_cam_list}")
+                _cam_by_name = {
+                    p.split("/")[-1]: p for p in self.data["camera_prim_list"]
+                }
+                sf_cam_list = []
+                for _name in _head_name_priority:
+                    if _name in _cam_by_name:
+                        sf_cam_list = [_cam_by_name[_name]]
+                        break
+                if not sf_cam_list:
+                    raise ValueError(
+                        "No supported head camera found in camera_prim_list; "
+                        f"available={list(_cam_by_name.keys())}"
+                    )
+                logger.info(f"SceneFlow single-camera mode: selected fixed {sf_cam_list}")
 
                 cam_resolutions = {
                     prim: tuple(self.cameras[prim])

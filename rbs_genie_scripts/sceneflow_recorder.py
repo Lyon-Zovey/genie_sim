@@ -484,10 +484,9 @@ class SceneFlowRecorder:
 
         # ── depth_video.npy  (T,H,W) float16 metres, OpenGL convention ──
         # Depth from Isaac Sim is positive distance along +Z (USD/RDF).
-        # OpenGL convention: camera looks along -Z, so depth values are the
-        # same magnitude but we don't negate the scalars — the sign change is
-        # already handled by convert_camera_depths.py using z_cam = -z_m.
-        # We store raw positive metres; background=0 already set above.
+        # Downstream sceneflow now uses the same OpenCV camera convention as
+        # depth/cam_intrinsics/cam2world_cv, so we store raw positive metres
+        # here and unproject with z_cam = +z_m in convert_camera_depths.py.
         depth_arr = np.stack(depth_list, axis=0).astype(np.float16)  # (T,H,W)
         np.save(str(out_dir / "depth_video.npy"), depth_arr)
 
@@ -545,8 +544,8 @@ class SceneFlowRecorder:
                 sg.create_dataset("position",   data=pos_world)
                 sg.create_dataset("quaternion", data=quat_world)
 
-                # camera-frame pose: p_cam_gl = R_w2c_gl @ p_world + t_w2c_gl
-                # R_w2c_gl = poses_gl[:, :3, :3].T (per frame)
+                # camera-frame pose: compute in OpenCV so it matches
+                # depth/cam_intrinsics/cam2world_cv and downstream sceneflow.
                 cam_pos_list  = []
                 cam_quat_list = []
                 for t in range(min(T, len(ob["position"]))):
@@ -555,12 +554,14 @@ class SceneFlowRecorder:
                     R_w2c = R_c2w.T
                     t_w2c = -(R_w2c @ t_c2w)
 
-                    p_cam = (R_w2c @ pos_world[t] + t_w2c).astype(np.float32)
+                    p_cam_gl = (R_w2c @ pos_world[t] + t_w2c).astype(np.float32)
+                    p_cam = (FLIP3 * p_cam_gl).astype(np.float32)
                     R_body_world = Rotation.from_quat([
                         quat_world[t, 1], quat_world[t, 2],
                         quat_world[t, 3], quat_world[t, 0],
                     ]).as_matrix().astype(np.float32)
-                    R_body_cam = (R_w2c @ R_body_world).astype(np.float32)
+                    R_body_cam_gl = (R_w2c @ R_body_world).astype(np.float32)
+                    R_body_cam = (FLIP3[:, None] * R_body_cam_gl).astype(np.float32)
                     q_cam = _mat3_to_quat_wxyz(R_body_cam)
 
                     cam_pos_list.append(p_cam)

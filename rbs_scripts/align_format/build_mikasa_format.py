@@ -124,19 +124,18 @@ def resolve_targets(actors: list, mapping_entry: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def compute_body_to_cam_cv(h5_path: Path, traj_key: str, bid: int) -> np.ndarray:
-    """Read camera_position/quaternion (GL convention) from H5, return (T,4,4) body->cam in OpenCV."""
+    """Read camera_position/quaternion (OpenCV) from H5, return (T,4,4) body->cam in OpenCV."""
     with h5py.File(str(h5_path), "r") as f:
         g = f[f"{traj_key}/id_poses/{bid}"]
-        cp = g["camera_position"][...]   # (T, 3) GL
-        cq = g["camera_quaternion"][...]  # (T, 4) wxyz, GL body->cam
+        cp = g["camera_position"][...]   # (T, 3) OpenCV
+        cq = g["camera_quaternion"][...]  # (T, 4) wxyz, OpenCV body->cam
 
     T = cp.shape[0]
-    out_gl = np.zeros((T, 4, 4), dtype=np.float32)
+    out_cv = np.zeros((T, 4, 4), dtype=np.float32)
     for t in range(T):
-        out_gl[t, :3, :3] = quat_wxyz_to_R(cq[t]).astype(np.float32)
-        out_gl[t, :3, 3] = cp[t]
-        out_gl[t, 3, 3] = 1.0
-    out_cv = (FLIP4[None] @ out_gl).astype(np.float32)
+        out_cv[t, :3, :3] = quat_wxyz_to_R(cq[t]).astype(np.float32)
+        out_cv[t, :3, 3] = cp[t]
+        out_cv[t, 3, 3] = 1.0
     return out_cv
 
 
@@ -337,12 +336,12 @@ def write_meta(traj_dir: Path, *, task_id: str, traj_name: str, T: int,
         "actors": actors,
 
         "coordinate_convention": {
-            "sceneflow":     "opengl_camera",
-            "anchor_points": "opengl_camera_ref_frame",
-            "flow_vectors":  "opengl_camera_ref_frame",
+            "sceneflow":     "opencv_camera",
+            "anchor_points": "opencv_camera_ref_frame",
+            "flow_vectors":  "opencv_camera_ref_frame",
         },
         "camera_convention": "opencv",
-        "flow_convention":   "opengl",
+        "flow_convention":   "opencv",
         "camera_pose_layout": "cam2world absolute; cam_poses relative to cam0",
         "cam2world_file":    "cam2world_cv.npy",
         "cam2world_gl_file": "cam2world_gl.npy",
