@@ -303,6 +303,39 @@ class CommandController:
                 viewport.set_active_camera("/G2/head_link3/head_front_Camera")
             with robot_rep:
                 rep.modify.semantics([("class", "robot")])
+
+            # SceneFlow needs robot end-effector links to come back as their
+            # OWN semantic class, not "robot", so the per-link seg_id mapping
+            # in SceneFlowRecorder.remap_seg can find them. We tag every Mesh
+            # under each EE / EE-center link with its link name; child Mesh
+            # SemanticsAPIs override the parent "robot" class at render time.
+            ee_paths = list(robot.end_effector_prim_path.values()) + list(
+                robot.end_effector_center_prim_path.values()
+            )
+            stage = omni.usd.get_context().get_stage()
+            for link_path in ee_paths:
+                if not link_path or stage is None:
+                    continue
+                root_prim = stage.GetPrimAtPath(link_path)
+                if not root_prim.IsValid():
+                    logger.warning(f"semantic skip (invalid prim): {link_path}")
+                    continue
+                link_label = link_path.split("/")[-1]
+                mesh_paths = [
+                    str(p.GetPath())
+                    for p in Usd.PrimRange(root_prim)
+                    if p.IsA(UsdGeom.Mesh)
+                ]
+                if not mesh_paths:
+                    logger.warning(f"semantic skip (no Mesh under): {link_path}")
+                    continue
+                link_rep = rep.get.prims(path_pattern=mesh_paths, prim_types=["Mesh"])
+                with link_rep:
+                    rep.modify.semantics([("class", link_label)])
+                logger.info(
+                    f"semantic tagged {len(mesh_paths)} mesh(es) under {link_path} "
+                    f"as class='{link_label}'"
+                )
             self.robot_cfg = robot
             self._play()
 
@@ -1067,18 +1100,40 @@ class CommandController:
                     for prim in sf_cam_list
                     if prim in self.cameras
                 }
+
+                # Build the tracked-prim list: scene objects + robot EE links.
+                # The EE links carry their own semantic class (set in _init_robot),
+                # so the segmentation re-map can find them; we also need their
+                # world pose every frame, so they live in object_prim_paths.
+                tracked_object_prims = list(self.object_asset_dict.keys())
+                tracked_robot_prims: list[str] = []
+                for prim in list(self.end_effector_prim_path.values()) + list(
+                    self.end_effector_center_prim_path.values()
+                ):
+                    if (
+                        prim
+                        and prim not in tracked_object_prims
+                        and prim not in tracked_robot_prims
+                    ):
+                        tracked_robot_prims.append(prim)
+                tracked_prim_paths = tracked_object_prims + tracked_robot_prims
+                prim_to_seg_id = {
+                    prim: idx + 1 for idx, prim in enumerate(tracked_prim_paths)
+                }
+                logger.info(
+                    f"SceneFlow tracked prims: objects={tracked_object_prims}, "
+                    f"robot_links={tracked_robot_prims}"
+                )
+
                 self.sceneflow_recorder = SceneFlowRecorder(
                     output_root=self._sf_cam_data_root,
                     traj_idx=self._traj_local_count,
                     camera_prim_list=sf_cam_list,
                     fps=float(task_fps),
                     task_id=self.task_name or "",
-                    object_prim_paths=list(self.object_asset_dict.keys()),
+                    object_prim_paths=tracked_prim_paths,
                     camera_resolutions=cam_resolutions,
-                    prim_to_seg_id={
-                        prim: idx + 1
-                        for idx, prim in enumerate(self.object_asset_dict.keys())
-                    },
+                    prim_to_seg_id=prim_to_seg_id,
                     target_prim_paths=additional_cam_parameters.get("target_prim_paths") or None,
                 )
                 self.sceneflow_recorder.init_annotators()

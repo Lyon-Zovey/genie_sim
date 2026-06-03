@@ -8,17 +8,27 @@
 #
 # Coordinate conventions
 # ----------------------
-# Isaac Sim cameras use a USD / "RDF" (right-down-forward) convention where
-# +Z points into the scene.  The sceneflow pipeline expects OpenGL / "RUB"
-# (right-up-backward): +X right, +Y up, -Z forward (cam looks along -Z).
+# Isaac Sim Camera prims (USD Camera schema) follow the OpenGL convention:
+# the camera's local +Z axis points BACKWARD (out of the scene) and the
+# camera looks along its local -Z. So `cam_xform.get_world_pose()` returns
+# an OpenGL cam-to-world transform directly. (The previous notes in this
+# file calling it "USD/RDF" were wrong — RDF is what Replicator's depth
+# uses for distance-along-+Z, not what the Camera prim's pose returns.)
 #
-# FLIP4 = diag(1, -1, -1, 1)  converts USD cam-to-world → OpenGL cam-to-world:
-#   T_gl = T_usd @ FLIP4
-# The same flip applies to any point expressed in camera space:
-#   p_gl = p_usd * [1, -1, -1]
+# The MIKASA / sceneflow pipeline downstream of us is entirely OpenCV:
+# anchor.npy uses z>0 forward, depth unprojection uses z_cam = +z_m,
+# cam2world_cv.npy is the consumed file. To keep one convention end-to-end
+# we convert GL → CV at the recorder source and never write GL again,
+# except as a derived helper file (cam2world_gl.npy) for legacy consumers.
 #
-# All poses stored in cam_poses.npy / id_poses are in OpenGL convention so
-# that downstream scripts need zero changes.
+# FLIP4 = diag(1, -1, -1, 1) is the GL ↔ CV converter (it is its own
+# inverse). For a cam-to-world matrix:
+#   T_cv = T_gl @ FLIP4
+# All on-disk products written by this recorder are in OpenCV:
+#   cam_poses.npy                          OpenCV cam-to-world (T,4,4)
+#   id_poses/<sid>/camera_position         OpenCV body→cam translation
+#   id_poses/<sid>/camera_quaternion       OpenCV body→cam rotation (wxyz)
+# id_poses/<sid>/position and quaternion are world-frame and convention-free.
 
 import json
 import os
@@ -29,9 +39,9 @@ import h5py
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-# diag(1,-1,-1,1) — flips Y and Z axes to convert USD→OpenGL camera frame
+# diag(1,-1,-1,1) — flips Y and Z axes to convert OpenGL ↔ OpenCV camera frame
+# (its own inverse: applying it twice is the identity).
 FLIP4 = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float32)
-FLIP3 = np.array([1.0, -1.0, -1.0], dtype=np.float32)
 
 
 def _mat3_to_quat_wxyz(R: np.ndarray) -> np.ndarray:
@@ -482,11 +492,11 @@ class SceneFlowRecorder:
         # ── rgb.mp4 ──────────────────────────────────────────────────────
         _save_rgb_video(rgb_list, str(out_dir / "rgb.mp4"), 16.0)
 
-        # ── depth_video.npy  (T,H,W) float16 metres, OpenGL convention ──
-        # Depth from Isaac Sim is positive distance along +Z (USD/RDF).
-        # Downstream sceneflow now uses the same OpenCV camera convention as
-        # depth/cam_intrinsics/cam2world_cv, so we store raw positive metres
-        # here and unproject with z_cam = +z_m in convert_camera_depths.py.
+        # ── depth_video.npy  (T,H,W) float16 metres, OpenCV convention ──
+        # Replicator's distance_to_image_plane is positive distance along the
+        # camera's +Z forward axis, which is exactly OpenCV. We store raw
+        # positive metres and unproject with z_cam = +z_m in
+        # convert_camera_depths.py.
         depth_arr = np.stack(depth_list, axis=0).astype(np.float16)  # (T,H,W)
         np.save(str(out_dir / "depth_video.npy"), depth_arr)
 
@@ -494,12 +504,15 @@ class SceneFlowRecorder:
         seg_arr = np.stack(seg_list, axis=0)  # (T,H,W) int32
         np.save(str(out_dir / "seg.npy"), seg_arr)
 
-        # ── cam_poses.npy  (T,4,4) float32 OpenGL cam-to-world ──────────
-        # Isaac Sim cam-to-world is in USD/RDF.  Convert to OpenGL by
-        # right-multiplying with FLIP4:  T_gl = T_usd @ FLIP4
-        poses_usd = np.stack(pose_list, axis=0)           # (T,4,4)
-        poses_gl  = poses_usd @ FLIP4                     # (T,4,4)
-        np.save(str(out_dir / "cam_poses.npy"), poses_gl.astype(np.float32))
+        # ── cam_poses.npy  (T,4,4) float32 OpenCV cam-to-world ──────────
+        # Isaac Sim Camera.get_world_pose() is OpenGL (cam looks down -Z).
+        # We convert to OpenCV at the source so every on-disk product (this
+        # file, depth, anchor, cam2world_cv, id_poses/camera_*) shares one
+        # convention.  mikasa_builder.build_camera_poses consumes this file
+        # as OpenCV directly.
+        poses_gl = np.stack(pose_list, axis=0).astype(np.float32)  # (T,4,4)
+        poses_cv = (poses_gl @ FLIP4).astype(np.float32)           # (T,4,4)
+        np.save(str(out_dir / "cam_poses.npy"), poses_cv)
 
         # ── cam_intrinsics.npy  (3,3) float32 ───────────────────────────
         np.save(str(out_dir / "cam_intrinsics.npy"), cam_K)
@@ -508,15 +521,23 @@ class SceneFlowRecorder:
         (out_dir / "camera_name.txt").write_text(cam_name + "\n")
 
     def _write_traj_h5(self) -> None:
-        """Write traj_N.h5 with id_poses/ group (MIKASA-compatible)."""
+        """Write traj_N.h5 with id_poses/ group (MIKASA-compatible).
+
+        camera_position / camera_quaternion are stored in OpenCV body→cam,
+        matching anchor.npy / depth / cam2world_cv.npy on disk.
+        """
         # Use the first camera to determine T
         first_buf = next(iter(self._bufs.values()))
         if not first_buf["rgb"]:
             return
         T = len(first_buf["rgb"])
-        poses_usd = np.stack(first_buf["cam_poses"], axis=0)  # (T,4,4) USD
-        # cam-to-world in OpenGL for computing world→cam transforms
-        poses_gl  = (poses_usd @ FLIP4).astype(np.float32)    # (T,4,4)
+
+        # buf["cam_poses"] is OpenGL cam-to-world (Isaac Camera native).
+        # Convert to OpenCV once; world→cam is then derived from poses_cv so
+        # that the body→cam translations / rotations stored under id_poses
+        # are in OpenCV (the same convention as anchor unprojection).
+        poses_gl = np.stack(first_buf["cam_poses"], axis=0).astype(np.float32)  # (T,4,4)
+        poses_cv = (poses_gl @ FLIP4).astype(np.float32)                        # (T,4,4)
 
         h5_path = self.traj_dir / f"{self.traj_key}.h5"
         with h5py.File(str(h5_path), "w") as f:
@@ -544,24 +565,20 @@ class SceneFlowRecorder:
                 sg.create_dataset("position",   data=pos_world)
                 sg.create_dataset("quaternion", data=quat_world)
 
-                # camera-frame pose: compute in OpenCV so it matches
-                # depth/cam_intrinsics/cam2world_cv and downstream sceneflow.
                 cam_pos_list  = []
                 cam_quat_list = []
                 for t in range(min(T, len(ob["position"]))):
-                    R_c2w = poses_gl[t, :3, :3]  # (3,3) OpenGL
-                    t_c2w = poses_gl[t, :3,  3]  # (3,)
+                    R_c2w = poses_cv[t, :3, :3]
+                    t_c2w = poses_cv[t, :3,  3]
                     R_w2c = R_c2w.T
                     t_w2c = -(R_w2c @ t_c2w)
 
-                    p_cam_gl = (R_w2c @ pos_world[t] + t_w2c).astype(np.float32)
-                    p_cam = (FLIP3 * p_cam_gl).astype(np.float32)
+                    p_cam = (R_w2c @ pos_world[t] + t_w2c).astype(np.float32)
                     R_body_world = Rotation.from_quat([
                         quat_world[t, 1], quat_world[t, 2],
                         quat_world[t, 3], quat_world[t, 0],
                     ]).as_matrix().astype(np.float32)
-                    R_body_cam_gl = (R_w2c @ R_body_world).astype(np.float32)
-                    R_body_cam = (FLIP3[:, None] * R_body_cam_gl).astype(np.float32)
+                    R_body_cam = (R_w2c @ R_body_world).astype(np.float32)
                     q_cam = _mat3_to_quat_wxyz(R_body_cam)
 
                     cam_pos_list.append(p_cam)

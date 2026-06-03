@@ -25,8 +25,8 @@ binary little-endian PLY.
 
 Coordinate conventions
 -----------------------
-cam_poses.npy (input from SceneFlowRecorder) is OpenGL cam-to-world.
-FLIP4 = diag(1,-1,-1,1) converts OpenGL ↔ OpenCV.
+cam_poses.npy (input from SceneFlowRecorder) is OpenCV cam-to-world.
+FLIP4 = diag(1,-1,-1,1) converts OpenCV ↔ OpenGL (it is its own inverse).
 """
 
 from __future__ import annotations
@@ -169,14 +169,14 @@ def extract_object_mesh(prim_path: str) -> tuple[np.ndarray, np.ndarray] | None:
 # Camera-pose helpers
 # ---------------------------------------------------------------------------
 
-def build_camera_poses(cam_poses_gl: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def build_camera_poses(cam_poses_cv: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Input:  cam_poses_gl  (T,4,4) float32  OpenGL cam-to-world absolute
+    Input:  cam_poses_cv  (T,4,4) float32  OpenCV cam-to-world absolute
                            (as stored in cam_poses.npy by SceneFlowRecorder)
     Output: (cam2world_cv, cam2world_gl, cam_poses_rel_cv)  all (T,4,4) float32
     """
-    cam2world_gl = cam_poses_gl.astype(np.float32)
-    cam2world_cv = (cam2world_gl @ FLIP4).astype(np.float32)
+    cam2world_cv = cam_poses_cv.astype(np.float32)
+    cam2world_gl = (cam2world_cv @ FLIP4).astype(np.float32)
 
     inv0 = _inv44(cam2world_cv[0:1])                    # (1,4,4)
     cam_poses_rel_cv = (inv0 @ cam2world_cv).astype(np.float32)
@@ -436,8 +436,8 @@ class MikasaBuilder:
         traj_key = traj_dir.name  # "traj_0"
 
         # 1) Camera poses ─────────────────────────────────────────────
-        raw_gl = np.load(str(traj_dir / "cam_poses.npy")).astype(np.float32)
-        cam2world_cv, cam2world_gl, cam_poses_rel_cv = build_camera_poses(raw_gl)
+        raw_cv = np.load(str(traj_dir / "cam_poses.npy")).astype(np.float32)
+        cam2world_cv, cam2world_gl, cam_poses_rel_cv = build_camera_poses(raw_cv)
         T = int(cam2world_cv.shape[0])
 
         np.save(str(traj_dir / "cam2world_cv.npy"), cam2world_cv)
