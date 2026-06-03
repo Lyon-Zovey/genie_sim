@@ -74,6 +74,118 @@ def _save_rgb_video(frames: list, path: str, fps: float) -> None:
             raise RuntimeError(f"ffmpeg encode failed for {path}")
 
 
+# Stable color palette: sid 0 always black (background); sids 1..N use a
+# tab20-like palette so two consecutive sids are always visually distinct.
+_PALETTE_RGB = np.array([
+    [  0,   0,   0],   # 0 background
+    [ 31, 119, 180],   # 1
+    [255, 127,  14],   # 2
+    [ 44, 160,  44],   # 3
+    [214,  39,  40],   # 4
+    [148, 103, 189],   # 5
+    [140,  86,  75],   # 6
+    [227, 119, 194],   # 7
+    [127, 127, 127],   # 8
+    [188, 189,  34],   # 9
+    [ 23, 190, 207],   # 10
+    [174, 199, 232],   # 11
+    [255, 152, 150],   # 12
+    [152, 223, 138],   # 13
+    [197, 176, 213],   # 14
+    [196, 156, 148],   # 15
+    [247, 182, 210],   # 16
+    [199, 199, 199],   # 17
+    [219, 219, 141],   # 18
+    [158, 218, 229],   # 19
+], dtype=np.uint8)
+
+
+def _seg_color_lut(max_sid: int) -> np.ndarray:
+    """Return (max_sid+1, 3) uint8 LUT mapping sid -> RGB."""
+    n = max_sid + 1
+    if n <= len(_PALETTE_RGB):
+        return _PALETTE_RGB[:n].copy()
+    extra = n - len(_PALETTE_RGB)
+    rng = np.random.default_rng(0xC0FFEE)
+    extra_rgb = rng.integers(40, 230, size=(extra, 3), dtype=np.uint8)
+    return np.concatenate([_PALETTE_RGB, extra_rgb], axis=0)
+
+
+def render_seg_overlay_video(
+    rgb_frames: np.ndarray,
+    seg_frames: np.ndarray,
+    out_path: str,
+    sid_to_name: dict,
+    fps: float = 16.0,
+    alpha: float = 0.55,
+) -> None:
+    """Write an MP4 with RGB overlaid by seg colors and per-sid text labels.
+
+    rgb_frames : (T,H,W,3) uint8
+    seg_frames : (T,H,W)   int(any width) — sids; 0 means background
+    sid_to_name: {int sid: str leaf_name}, sid=0 is auto-labelled "background"
+    """
+    try:
+        import cv2  # only used for centroid placement + putText
+    except ImportError:
+        cv2 = None  # text labels disabled but overlay still works
+
+    rgb_frames = np.asarray(rgb_frames)
+    seg_frames = np.asarray(seg_frames).astype(np.int32)
+    assert rgb_frames.shape[:3] == seg_frames.shape[:3], (
+        f"rgb {rgb_frames.shape} / seg {seg_frames.shape} shape mismatch"
+    )
+    T, H, W = seg_frames.shape
+
+    max_sid = int(max(seg_frames.max(initial=0), max(sid_to_name.keys() or [0])))
+    lut = _seg_color_lut(max_sid)
+    seg_clamped = np.clip(seg_frames, 0, max_sid)
+    seg_rgb = lut[seg_clamped]                          # (T,H,W,3)
+
+    # Alpha blend (skip pixels where seg==0 — let RGB show through unchanged
+    # so the background scene stays visible)
+    rgb_f = rgb_frames.astype(np.float32)
+    seg_f = seg_rgb.astype(np.float32)
+    fg_mask = (seg_frames > 0)[..., None].astype(np.float32)
+    blended = rgb_f * (1.0 - alpha * fg_mask) + seg_f * (alpha * fg_mask)
+    blended = blended.clip(0, 255).astype(np.uint8)
+
+    # Per-frame: write each visible sid's leaf-name once at its centroid
+    out_frames = []
+    for t in range(T):
+        img = blended[t].copy()
+        seg_t = seg_frames[t]
+        unique_sids = np.unique(seg_t)
+        if cv2 is not None:
+            for sid in unique_sids:
+                if sid <= 0:
+                    continue
+                ys, xs = np.where(seg_t == sid)
+                if ys.size < 30:                # ignore noise specks
+                    continue
+                cy, cx = int(ys.mean()), int(xs.mean())
+                label = sid_to_name.get(int(sid), f"sid={sid}")
+                text = f"{sid}:{label}"
+                cv2.putText(img, text, (cx - 4, cy + 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, text, (cx - 4, cy + 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+
+            # Top-left legend: list every tracked sid (visible or not), green
+            # if present in this frame, red if missing — instantly shows the
+            # "夹爪没 mask" case.
+            present = set(unique_sids.tolist())
+            for i, (sid, name) in enumerate(sorted(sid_to_name.items())):
+                color = (0, 200, 0) if sid in present else (220, 60, 60)
+                cv2.putText(img, f"{sid}:{name}", (8, 16 + i * 14),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, f"{sid}:{name}", (8, 16 + i * 14),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+        out_frames.append(img)
+
+    _save_rgb_video(out_frames, out_path, fps)
+
+
 class SceneFlowRecorder:
     """Per-trajectory frame buffer + disk writer.
 
@@ -146,6 +258,11 @@ class SceneFlowRecorder:
 
         # seg_id mapping: prim_path → integer ID (populated by caller or inferred at flush)
         self._prim_to_seg_id: dict[str, int] = dict(prim_to_seg_id) if prim_to_seg_id else {}
+
+        # One-shot diagnostic: dump idToLabels + remap-LUT coverage on the
+        # first captured frame so we can see, post-mortem, which prims got a
+        # working SemanticsAPI and which silently fell back to "robot"/"".
+        self._dumped_seg_diag: bool = False
 
     # ------------------------------------------------------------------
     # One-time annotator setup (call once after Isaac Sim stage is ready)
@@ -250,6 +367,9 @@ class SceneFlowRecorder:
                     # collide with our prim_to_seg_id[first_object]=1, causing the
                     # mask to cover most of the frame.
                     id_to_labels = seg_data.get("info", {}).get("idToLabels", {})
+                    if not self._dumped_seg_diag:
+                        self._dump_seg_diag(id_to_labels, seg)
+                        self._dumped_seg_diag = True
                     if id_to_labels and self._prim_to_seg_id:
                         seg = self._remap_seg(seg, id_to_labels)
                 else:
@@ -463,6 +583,11 @@ class SceneFlowRecorder:
             label_to_seq[label] = seq_id
 
         # Build LUT: isaac_id → seq_id
+        # Replicator may concatenate multiple ancestor classes with ',' (e.g.
+        # an ancestor /G1 carrying class="robot" plus a descendant link
+        # carrying class="gripper_l_center_link" → "gripper_l_center_link,robot").
+        # We split on ',' and pick the most specific tracked leaf-name match
+        # (the one in label_to_seq); anything else collapses to background.
         max_isaac_id = max((int(k) for k in id_to_labels), default=0)
         lut = np.zeros(max_isaac_id + 2, dtype=np.int32)  # default 0 = background
         for isaac_id_str, entry in id_to_labels.items():
@@ -471,13 +596,50 @@ class SceneFlowRecorder:
             except (ValueError, TypeError):
                 continue
             label = entry.get("class", "") if isinstance(entry, dict) else str(entry)
-            seq_id = label_to_seq.get(label, 0)
+            parts = [p.strip() for p in label.split(",") if p.strip()]
+            seq_id = 0
+            for part in parts:
+                if part in label_to_seq:
+                    seq_id = label_to_seq[part]
+                    break
             if 0 <= isaac_id < len(lut):
                 lut[isaac_id] = seq_id
 
         # Apply LUT — clamp out-of-range values to 0
         remapped = np.where(seg < len(lut), lut[np.clip(seg, 0, len(lut) - 1)], 0)
         return remapped.astype(np.int32)
+
+    def _dump_seg_diag(self, id_to_labels: dict, seg: np.ndarray) -> None:
+        """One-shot post-mortem: which Isaac labels did we actually receive,
+        and which of our tracked prim leaf-names matched?"""
+        import logging
+        log = logging.getLogger(__name__)
+
+        labels_in_frame = set()
+        for k, v in (id_to_labels or {}).items():
+            label = v.get("class", "") if isinstance(v, dict) else str(v)
+            for part in label.split(","):
+                part = part.strip()
+                if part:
+                    labels_in_frame.add(part)
+
+        wanted = {p.split("/")[-1]: p for p in self._prim_to_seg_id}
+        matched = sorted(set(wanted) & labels_in_frame)
+        missing = sorted(set(wanted) - labels_in_frame)
+
+        unique_ids, counts = np.unique(seg, return_counts=True)
+        top = sorted(zip(unique_ids.tolist(), counts.tolist()),
+                     key=lambda x: -x[1])[:8]
+
+        log.warning(
+            "[SceneFlow seg diag] idToLabels=%s",
+            {k: v.get("class", v) if isinstance(v, dict) else v
+             for k, v in (id_to_labels or {}).items()},
+        )
+        log.warning("[SceneFlow seg diag] tracked leaf-names = %s", sorted(wanted))
+        log.warning("[SceneFlow seg diag] matched in frame    = %s", matched)
+        log.warning("[SceneFlow seg diag] MISSING from frame  = %s", missing)
+        log.warning("[SceneFlow seg diag] raw seg top-8 (id,px) = %s", top)
 
     def _write_camera_data(self, buf: dict, out_dir: Path, cam_name: str) -> None:
         rgb_list   = buf["rgb"]
@@ -519,6 +681,38 @@ class SceneFlowRecorder:
 
         # ── camera_name.txt ──────────────────────────────────────────────
         (out_dir / "camera_name.txt").write_text(cam_name + "\n")
+
+        # ── seg_vis.mp4 + seg_legend.json (debug aids) ───────────────────
+        # seg_vis.mp4: rgb with per-sid color overlay + leaf-name labels at
+        # blob centroids + a top-left legend that goes red whenever a tracked
+        # sid is missing from the frame. Lets you eyeball "is the gripper
+        # actually being segmented?" without writing any extra script.
+        sid_to_name = {
+            self._prim_to_seg_id[p]: p.split("/")[-1]
+            for p in self._prim_to_seg_id
+        }
+        try:
+            rgb_arr = np.stack(rgb_list, axis=0)
+            seg_arr_full = np.stack(seg_list, axis=0)
+            render_seg_overlay_video(
+                rgb_arr, seg_arr_full,
+                str(out_dir / "seg_vis.mp4"),
+                sid_to_name, fps=16.0,
+            )
+        except Exception as _e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"seg_vis.mp4 render failed (non-fatal): {_e}"
+            )
+
+        legend = {
+            "sid_to_name": {str(k): v for k, v in sorted(sid_to_name.items())},
+            "sid_to_prim": {
+                str(self._prim_to_seg_id[p]): p for p in self._prim_to_seg_id
+            },
+        }
+        with open(str(out_dir / "seg_legend.json"), "w", encoding="utf-8") as f:
+            json.dump(legend, f, ensure_ascii=False, indent=2)
 
     def _write_traj_h5(self) -> None:
         """Write traj_N.h5 with id_poses/ group (MIKASA-compatible).

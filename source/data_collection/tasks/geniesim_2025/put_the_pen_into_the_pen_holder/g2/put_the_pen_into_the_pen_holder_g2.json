@@ -148,7 +148,7 @@
             "/G2/head_link3/head_left_Camera"
         ],
         "fps": 30,
-        "num_of_episode": 8,
+        "num_of_episode": 5,
         "noised_probability": 0.1
     },
     "robot": {
@@ -367,24 +367,6 @@
             },
             "passive": {
                 "object_id": "geniesim_2025_pen_holder",
-                "primitive": null
-            }
-        },
-        {
-            "action": "reset",
-            "action_description": {
-                "action_text": "手臂复位",
-                "english_action_text": "Arm resets"
-            },
-            "active": {
-                "object_id": "gripper",
-                "primitive": null
-            },
-            "extra_params": {
-                "arm": "auto"
-            },
-            "passive": {
-                "object_id": "gripper",
                 "primitive": null
             }
         }

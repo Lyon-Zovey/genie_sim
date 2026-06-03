@@ -27,7 +27,7 @@ from isaacsim.sensors.camera import Camera
 from omni.kit.viewport.utility import get_active_viewport_and_window
 from omni.kit.viewport.utility.camera_state import ViewportCameraState
 from omni.physx.scripts import utils
-from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+from pxr import Gf, PhysxSchema, Sdf, Semantics, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from common.base_utils.logger import logger
 from common.base_utils.ros_nodes.server_node import ServerNode
@@ -306,13 +306,31 @@ class CommandController:
 
             # SceneFlow needs robot end-effector links to come back as their
             # OWN semantic class, not "robot", so the per-link seg_id mapping
-            # in SceneFlowRecorder.remap_seg can find them. We tag every Mesh
-            # under each EE / EE-center link with its link name; child Mesh
-            # SemanticsAPIs override the parent "robot" class at render time.
+            # in SceneFlowRecorder.remap_seg can find them.
+            #
+            # IMPORTANT: we MUST go through rep.modify.semantics so that
+            # Replicator's SDG cache picks the change up — directly applying
+            # USD Semantics.SemanticsAPI works in the USD layer but never
+            # reaches the segmentation annotator's idToLabels map (verified
+            # 2026-06-03: 21 mesh APIs written, 0 leaf-names showed up in
+            # idToLabels, all gripper pixels stayed under class="robot").
+            # Each mesh is tagged with its OWN call (single path string,
+            # not a list) so path_pattern is unambiguous.
             ee_paths = list(robot.end_effector_prim_path.values()) + list(
                 robot.end_effector_center_prim_path.values()
             )
             stage = omni.usd.get_context().get_stage()
+
+            def _tag_mesh_with_class(mesh_prim, class_name: str) -> None:
+                """Single-mesh semantic tag via Replicator (string path_pattern)."""
+                rp = rep.get.prims(
+                    path_pattern=str(mesh_prim.GetPath()),
+                    prim_types=["Mesh"],
+                )
+                with rp:
+                    rep.modify.semantics([("class", class_name)])
+
+            ee_link_had_mesh = False
             for link_path in ee_paths:
                 if not link_path or stage is None:
                     continue
@@ -320,22 +338,99 @@ class CommandController:
                 if not root_prim.IsValid():
                     logger.warning(f"semantic skip (invalid prim): {link_path}")
                     continue
+                root_prim.Load()
                 link_label = link_path.split("/")[-1]
-                mesh_paths = [
-                    str(p.GetPath())
-                    for p in Usd.PrimRange(root_prim)
-                    if p.IsA(UsdGeom.Mesh)
+                mesh_prims = [
+                    p for p in Usd.PrimRange(root_prim) if p.IsA(UsdGeom.Mesh)
                 ]
-                if not mesh_paths:
+                if not mesh_prims:
                     logger.warning(f"semantic skip (no Mesh under): {link_path}")
                     continue
-                link_rep = rep.get.prims(path_pattern=mesh_paths, prim_types=["Mesh"])
-                with link_rep:
-                    rep.modify.semantics([("class", link_label)])
+                ee_link_had_mesh = True
+                for mp in mesh_prims:
+                    _tag_mesh_with_class(mp, link_label)
                 logger.info(
-                    f"semantic tagged {len(mesh_paths)} mesh(es) under {link_path} "
+                    f"semantic tagged {len(mesh_prims)} mesh(es) under {link_path} "
                     f"as class='{link_label}'"
                 )
+
+            # Fallback: G1/G2 articulation EE / EE-center links are bare
+            # frames with no geometry. The actual gripper geometry (visual
+            # AND collision) lives under sibling per-finger link prims.
+            #
+            # Replicator's semantic_segmentation registers classes ONLY for
+            # rendered prims; collisions and Cam children don't render, so
+            # tagging those meshes never reached idToLabels (verified
+            # 2026-06-03 iter-3, 21 collision/Cam meshes tagged → 0 leaf
+            # names in idToLabels). The actual rendered visual mesh is in
+            # a different USD payload that may not be enumerable at this
+            # point in startup.
+            #
+            # Workaround: tag the link XForm itself (e.g.
+            # `/G1/gripper_l_inner_link3`). USD semantic inheritance is
+            # "closest-ancestor wins", so whichever mesh ends up rendered
+            # under this link will inherit class="gripper_l_center_link"
+            # — overriding the broader /G1 class="robot" from above.
+            if not ee_link_had_mesh and stage is not None:
+                robot_root = stage.GetPrimAtPath(robot.robot_prim_path)
+                if robot_root.IsValid():
+                    robot_root.Load()
+                    grip_kw = ("grip", "finger", "jaw")
+
+                    def _side_from_name(n: str) -> str:
+                        n = n.lower()
+                        if "_l_" in n or n.startswith("l_") or "left" in n:
+                            return "L"
+                        if "_r_" in n or n.startswith("r_") or "right" in n:
+                            return "R"
+                        return ""
+
+                    def _tag_xform_with_class(xform_prim, class_name: str) -> None:
+                        rp = rep.get.prims(
+                            path_pattern=str(xform_prim.GetPath()),
+                            prim_types=["Xform"],
+                        )
+                        with rp:
+                            rep.modify.semantics([("class", class_name)])
+
+                    left_links, right_links, unclassified_links = [], [], []
+                    for p in Usd.PrimRange(robot_root):
+                        if not p.IsA(UsdGeom.Xform):
+                            continue
+                        name = p.GetName().lower()
+                        if not any(k in name for k in grip_kw):
+                            continue
+                        side = _side_from_name(name)
+                        if side == "L":
+                            left_links.append(p)
+                        elif side == "R":
+                            right_links.append(p)
+                        else:
+                            unclassified_links.append(p)
+                    for lp in left_links:
+                        _tag_xform_with_class(lp, "gripper_l_center_link")
+                    for lp in right_links:
+                        _tag_xform_with_class(lp, "gripper_r_center_link")
+                    logger.info(
+                        f"semantic fallback: tagged {len(left_links)}L + "
+                        f"{len(right_links)}R gripper link Xform(s); "
+                        f"{len(unclassified_links)} unclassified."
+                    )
+                    for lp in left_links + right_links:
+                        logger.info(f"  gripper-link (Xform): {lp.GetPath()}")
+                    for lp in unclassified_links:
+                        logger.warning(f"  gripper-link side?: {lp.GetPath()}")
+
+                    all_meshes = [
+                        str(p.GetPath()) for p in Usd.PrimRange(robot_root)
+                        if p.IsA(UsdGeom.Mesh)
+                    ]
+                    logger.info(
+                        f"semantic fallback: total {len(all_meshes)} Mesh "
+                        f"prim(s) under robot_root. Dumping all paths:"
+                    )
+                    for mp in all_meshes:
+                        logger.info(f"  robot-mesh: {mp}")
             self.robot_cfg = robot
             self._play()
 
