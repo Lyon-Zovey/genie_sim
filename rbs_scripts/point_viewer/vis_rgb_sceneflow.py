@@ -49,13 +49,42 @@ def load_rgb_video(path: Path) -> np.ndarray:
 
 
 def load_depth_b2nd(path: Path) -> np.ndarray | None:
+    """Load depth_video_int16mm_dt.b2nd and reverse the temporal XOR delta.
+
+    point_compress.py writes int16(mm) along axis=0 with:
+        u = int16.view(uint16); d[0]=u[0]; d[1:] = u[1:] ^ u[:-1]
+    so on disk the file is *delta-encoded*. We must XOR-cumulate back
+    before treating values as absolute depth in millimeters.
+    Without this step, t>0 frames yield near-zero / garbage depth and the
+    "/depth_rgb" point cloud appears to vanish after the first frame.
+    """
     try:
         import blosc2
     except ImportError:
         print("  blosc2 not installed; skipping depth")
         return None
-    arr = blosc2.open(str(path))[:]
-    return np.asarray(arr).astype(np.float32) / 1000.0  # int16 mm -> meters
+    raw = np.asarray(blosc2.open(str(path))[:])
+    # Recover absolute uint16 by cumulative XOR along T (axis=0)
+    if raw.dtype != np.int16:
+        # be defensive; ensure correct width before view
+        raw = raw.astype(np.int16)
+    u = raw.view(np.uint16).copy()
+    np.bitwise_xor.accumulate(u, axis=0, out=u)
+    abs_i16 = u.view(np.int16)
+    # Read mm_step from sidecar meta if present (defaults to 1 mm/unit)
+    meta_path = path.with_suffix("").with_suffix(".meta.json")
+    if not meta_path.exists():
+        meta_path = path.parent / (path.stem + ".meta.json")
+    mm_step = 1.0
+    try:
+        if meta_path.exists():
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            mm_step = float(meta.get("mm_step_mm", 1.0))
+    except Exception as e:
+        print(f"  warn: failed to read depth meta {meta_path.name}: {e}")
+    # int16(mm/mm_step) -> meters
+    return abs_i16.astype(np.float32) * (mm_step / 1000.0)
 
 
 def load_seg_b2nd(path: Path) -> np.ndarray | None:
